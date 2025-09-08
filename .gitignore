@@ -1,0 +1,19 @@
+# IDE and editor settings
+.DS_Store
+.vscode/
+
+# Rust build artifacts
+/target/
+**/*.rs.bk
+
+# Logs and output
+*.log
+
+# Byproducts of wgpu shaders
+*.spv
+*.temp
+
+# WASM build output (if planning WebGPU support)
+/pkg/
+/dist/
+*.wasm
