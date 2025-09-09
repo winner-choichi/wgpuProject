@@ -1,45 +1,6 @@
-#[cfg(target_arch = "wasm32")]
-use wasm_bindgen::JsCast;
-#[cfg(target_arch = "wasm32")]
-use wasm_bindgen::prelude::*;
-#[cfg(target_arch = "wasm32")]
-use wasm_bindgen_futures::spawn_local;
 use wgpu::util::DeviceExt;
 
 pub mod platform;
-
-#[cfg(target_arch = "wasm32")]
-#[wasm_bindgen(start)]
-pub fn start() {
-    console_log::init_with_level(log::Level::Debug).expect("Couldn't initialize logger");
-    console_error_panic_hook::set_once();
-
-    // DOM이 로드될 때까지 기다림
-    let window = web_sys::window().unwrap();
-    let document = window.document().unwrap();
-    let canvas = document.get_element_by_id("canvas").unwrap();
-    let canvas: web_sys::HtmlCanvasElement = canvas.dyn_into().unwrap();
-
-    // 캔버스 크기 설정 (HTML과 일치시킴)
-    canvas.set_width(640);
-    canvas.set_height(480);
-
-    spawn_local(async move {
-        match create_renderer(&canvas).await {
-            Ok(mut renderer) => {
-                log::info!("Renderer created successfully!");
-                // 첫 번째 렌더링 수행
-                match renderer.render() {
-                    Ok(_) => log::info!("Triangle rendered successfully!"),
-                    Err(e) => log::error!("Render failed: {:?}", e),
-                }
-            }
-            Err(e) => {
-                log::error!("Failed to create renderer: {:?}", e);
-            }
-        }
-    });
-}
 
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
@@ -224,7 +185,7 @@ pub async fn create_renderer<T: platform::SurfaceProvider>(
             max_compute_invocations_per_workgroup: 0,
             ..wgpu::Limits::downlevel_webgl2_defaults()
         };
-        
+
         adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
@@ -238,9 +199,7 @@ pub async fn create_renderer<T: platform::SurfaceProvider>(
             .map_err(|e| format!("Failed to create WebGL device: {:?}", e))?
     } else {
         // 네이티브에서는 기본 설정 사용
-        adapter
-            .request_device(&Default::default(), None)
-            .await?
+        adapter.request_device(&Default::default(), None).await?
     };
 
     let format = if let Some(surface) = &surface {

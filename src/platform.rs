@@ -1,6 +1,14 @@
 use wgpu::{Instance, Surface};
 use winit::dpi::PhysicalSize;
 
+// wasm32 타겟에서 필요한 import들
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::JsCast;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::prelude::*;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_futures::spawn_local;
+
 /// 플랫폼별 Surface 생성을 추상화하는 트레이트
 pub trait SurfaceProvider {
     fn create_surface(
@@ -34,7 +42,7 @@ impl SurfaceProvider for web_sys::HtmlCanvasElement {
         // wasm32에서는 캔버스를 직접 사용 (OffscreenCanvas 대신)
         let surface = instance.create_surface(wgpu::SurfaceTarget::Canvas(self.clone()))?;
         let static_surface = unsafe { std::mem::transmute(surface) };
-        
+
         let size = PhysicalSize::new(self.width(), self.height());
         Ok((Some(static_surface), size))
     }
@@ -64,7 +72,7 @@ pub fn start() {
     use winit::{event::*, event_loop::EventLoop, window::WindowBuilder};
 
     env_logger::init();
-    
+
     let event_loop = EventLoop::new().unwrap();
     let window = WindowBuilder::new()
         .with_title("WGPU Triangle")
@@ -90,17 +98,47 @@ pub fn start() {
         Event::WindowEvent {
             event: WindowEvent::RedrawRequested,
             ..
-        } => {
-            match renderer.render() {
-                Ok(_) => {}
-                Err(wgpu::SurfaceError::Lost) => renderer.resize(renderer.size()),
-                Err(wgpu::SurfaceError::OutOfMemory) => target.exit(),
-                Err(e) => eprintln!("Render error: {:?}", e),
-            }
-        }
+        } => match renderer.render() {
+            Ok(_) => {}
+            Err(wgpu::SurfaceError::Lost) => renderer.resize(renderer.size()),
+            Err(wgpu::SurfaceError::OutOfMemory) => target.exit(),
+            Err(e) => eprintln!("Render error: {:?}", e),
+        },
         Event::AboutToWait => {
             // 지속적인 렌더링을 위해 redraw 요청
         }
         _ => {}
+    });
+}
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen(start)]
+pub fn start() {
+    console_log::init_with_level(log::Level::Debug).expect("Couldn't initialize logger");
+    console_error_panic_hook::set_once();
+
+    // DOM이 로드될 때까지 기다림
+    let window = web_sys::window().unwrap();
+    let document = window.document().unwrap();
+    let canvas = document.get_element_by_id("canvas").unwrap();
+    let canvas: web_sys::HtmlCanvasElement = canvas.dyn_into().unwrap();
+
+    // 캔버스 크기 설정 (HTML과 일치시킴)
+    canvas.set_width(640);
+    canvas.set_height(480);
+
+    spawn_local(async move {
+        match crate::create_renderer(&canvas).await {
+            Ok(mut renderer) => {
+                log::info!("Renderer created successfully!");
+                // 첫 번째 렌더링 수행
+                match renderer.render() {
+                    Ok(_) => log::info!("Triangle rendered successfully!"),
+                    Err(e) => log::error!("Render failed: {:?}", e),
+                }
+            }
+            Err(e) => {
+                log::error!("Failed to create renderer: {:?}", e);
+            }
+        }
     });
 }
