@@ -1,14 +1,6 @@
 use wgpu::{Instance, Surface};
 use winit::dpi::PhysicalSize;
 
-// wasm32 타겟에서 필요한 import들
-#[cfg(target_arch = "wasm32")]
-use wasm_bindgen::JsCast;
-#[cfg(target_arch = "wasm32")]
-use wasm_bindgen::prelude::*;
-#[cfg(target_arch = "wasm32")]
-use wasm_bindgen_futures::spawn_local;
-
 /// 플랫폼별 Surface 생성을 추상화하는 트레이트
 pub trait SurfaceProvider {
     fn create_surface(
@@ -29,38 +21,6 @@ impl SurfaceProvider for winit::window::Window {
         // Surface를 'static으로 변환하기 위해 unsafe 사용
         let static_surface = unsafe { std::mem::transmute(surface) };
         Ok((Some(static_surface), size))
-    }
-}
-
-/// 웹 캔버스용 SurfaceProvider 구현
-#[cfg(target_arch = "wasm32")]
-impl SurfaceProvider for web_sys::HtmlCanvasElement {
-    fn create_surface(
-        &self,
-        instance: &Instance,
-    ) -> Result<(Option<Surface<'static>>, PhysicalSize<u32>), Box<dyn std::error::Error>> {
-        // wasm32에서는 캔버스를 직접 사용 (OffscreenCanvas 대신)
-        let surface = instance.create_surface(wgpu::SurfaceTarget::Canvas(self.clone()))?;
-        let static_surface = unsafe { std::mem::transmute(surface) };
-
-        let size = PhysicalSize::new(self.width(), self.height());
-        Ok((Some(static_surface), size))
-    }
-}
-
-/// 헤드리스 모드용 (Surface 없이 실행)
-pub struct HeadlessProvider {
-    pub width: u32,
-    pub height: u32,
-}
-
-impl SurfaceProvider for HeadlessProvider {
-    fn create_surface(
-        &self,
-        _instance: &Instance,
-    ) -> Result<(Option<Surface<'static>>, PhysicalSize<u32>), Box<dyn std::error::Error>> {
-        let size = PhysicalSize::new(self.width, self.height);
-        Ok((None, size))
     }
 }
 
@@ -110,6 +70,11 @@ pub fn start() {
         _ => {}
     });
 }
+
+// wasm32 타겟에서 필요한 import들
+#[cfg(target_arch = "wasm32")]
+use {wasm_bindgen::JsCast, wasm_bindgen::prelude::*, wasm_bindgen_futures::spawn_local};
+
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen(start)]
 pub fn start() {
@@ -141,4 +106,36 @@ pub fn start() {
             }
         }
     });
+}
+
+/// 웹 캔버스용 SurfaceProvider 구현
+#[cfg(target_arch = "wasm32")]
+impl SurfaceProvider for web_sys::HtmlCanvasElement {
+    fn create_surface(
+        &self,
+        instance: &Instance,
+    ) -> Result<(Option<Surface<'static>>, PhysicalSize<u32>), Box<dyn std::error::Error>> {
+        // wasm32에서는 캔버스를 직접 사용 (OffscreenCanvas 대신)
+        let surface = instance.create_surface(wgpu::SurfaceTarget::Canvas(self.clone()))?;
+        let static_surface = unsafe { std::mem::transmute(surface) };
+
+        let size = PhysicalSize::new(self.width(), self.height());
+        Ok((Some(static_surface), size))
+    }
+}
+
+/// 헤드리스 모드용 (Surface 없이 실행)
+pub struct HeadlessProvider {
+    pub width: u32,
+    pub height: u32,
+}
+
+impl SurfaceProvider for HeadlessProvider {
+    fn create_surface(
+        &self,
+        _instance: &Instance,
+    ) -> Result<(Option<Surface<'static>>, PhysicalSize<u32>), Box<dyn std::error::Error>> {
+        let size = PhysicalSize::new(self.width, self.height);
+        Ok((None, size))
+    }
 }
