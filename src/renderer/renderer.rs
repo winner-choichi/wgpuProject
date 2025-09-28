@@ -1,74 +1,98 @@
-// src/renderer/renderer.rs
+use crate::platform::SurfaceProvider;
 use crate::renderer::camera::{Camera, CameraUniform};
+use crate::renderer::cloud::{CloudRenderer, CloudVertex};
 use crate::renderer::mesh::Mesh;
-use crate::renderer::vertex::Vertex; // We need this for Vertex::desc()
+use crate::renderer::vertex::Vertex;
+use glam::Vec3;
+use std::borrow::Cow;
 use wgpu::util::DeviceExt;
-use winit::window::Window;
+use winit::dpi::PhysicalSize;
 
-pub struct Renderer<'a> {
-    surface: wgpu::Surface<'a>,
+pub struct Renderer {
+    surface: Option<wgpu::Surface<'static>>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
-    size: winit::dpi::PhysicalSize<u32>,
-    render_pipeline: wgpu::RenderPipeline,
-    sphere_mesh: Mesh,
+    size: PhysicalSize<u32>,
     camera: Camera,
-    camera_buffer: wgpu::Buffer,
     camera_uniform: CameraUniform,
+    camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
+    sphere_pipeline: wgpu::RenderPipeline,
+    sphere_mesh: Mesh,
+    cloud_renderer: CloudRenderer,
 }
-impl<'a> Renderer<'a> {
-    pub async fn new(window: &'a Window) -> Self {
-        let size = window.inner_size();
 
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
-        let surface = instance.create_surface(window).unwrap();
+impl Renderer {
+    pub async fn new<T: SurfaceProvider>(
+        target: &T,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let instance = if cfg!(target_arch = "wasm32") {
+            wgpu::Instance::new(wgpu::InstanceDescriptor {
+                backends: wgpu::Backends::GL,
+                flags: wgpu::InstanceFlags::default(),
+                dx12_shader_compiler: wgpu::Dx12Compiler::default(),
+                gles_minor_version: wgpu::Gles3MinorVersion::Automatic,
+            })
+        } else {
+            wgpu::Instance::default()
+        };
+
+        let (surface, size) = target.create_surface(&instance)?;
 
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::default(),
-                compatible_surface: Some(&surface),
+                compatible_surface: surface.as_ref(),
+                power_preference: wgpu::PowerPreference::HighPerformance,
                 force_fallback_adapter: false,
             })
             .await
-            .unwrap();
+            .ok_or_else(|| "Failed to acquire GPU adapter".to_string())?;
 
-        // --- THIS IS THE CRITICAL FIX ---
-        // We explicitly ask for web-compatible limits.
+        let limits = if cfg!(target_arch = "wasm32") {
+            let mut web_limits = wgpu::Limits::downlevel_webgl2_defaults();
+            web_limits.max_sampled_textures_per_shader_stage =
+                web_limits.max_sampled_textures_per_shader_stage.max(4);
+            web_limits
+        } else {
+            wgpu::Limits::downlevel_defaults()
+        };
+
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
-                    label: Some("Device"),
+                    label: Some("Renderer Device"),
                     required_features: wgpu::Features::empty(),
-                    required_limits: wgpu::Limits::downlevel_webgl2_defaults(),
+                    required_limits: limits,
                 },
                 None,
             )
-            .await
-            .unwrap();
-        // --- END OF FIX ---
+            .await?;
 
-        let surface_caps = surface.get_capabilities(&adapter);
-        let surface_format = surface_caps.formats[0];
+        let format = surface
+            .as_ref()
+            .map(|s| s.get_capabilities(&adapter).formats[0])
+            .unwrap_or(wgpu::TextureFormat::Bgra8UnormSrgb);
 
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: surface_format,
-            width: size.width,
-            height: size.height,
+            format,
+            width: size.width.max(1),
+            height: size.height.max(1),
             present_mode: wgpu::PresentMode::Fifo,
-            alpha_mode: surface_caps.alpha_modes[0],
+            alpha_mode: wgpu::CompositeAlphaMode::Auto,
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
         };
-        surface.configure(&device, &config);
 
-        // ... The rest of the function remains the same ...
+        if let Some(surface) = &surface {
+            surface.configure(&device, &config);
+        }
+
         let camera = Camera {
-            eye: (0.0, 0.5, 1.0).into(),
-            target: (0.0, 0.0, 0.0).into(),
-            up: glam::Vec3::Y,
+            eye: Vec3::new(0.0, 1.8, 4.0),
+            target: Vec3::ZERO,
+            up: Vec3::Y,
             aspect: config.width as f32 / config.height as f32,
             fovy: 45.0,
             znear: 0.1,
@@ -86,6 +110,7 @@ impl<'a> Renderer<'a> {
 
         let camera_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Camera Bind Group Layout"),
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::VERTEX,
@@ -96,43 +121,40 @@ impl<'a> Renderer<'a> {
                     },
                     count: None,
                 }],
-                label: Some("camera_bind_group_layout"),
             });
 
         let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Camera Bind Group"),
             layout: &camera_bind_group_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
                 resource: camera_buffer.as_entire_binding(),
             }],
-            label: Some("camera_bind_group"),
         });
 
-        let sphere_mesh = Mesh::new_sphere(&device, 16, 32, 0.1);
-
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/sphere.wgsl").into()),
+        let sphere_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Nucleus Shader"),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("../shaders/sphere.wgsl"))),
         });
 
-        let render_pipeline_layout =
+        let sphere_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("Render Pipeline Layout"),
+                label: Some("Sphere Pipeline Layout"),
                 bind_group_layouts: &[&camera_bind_group_layout],
                 push_constant_ranges: &[],
             });
 
-        let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Render Pipeline"),
-            layout: Some(&render_pipeline_layout),
+        let sphere_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Sphere Pipeline"),
+            layout: Some(&sphere_pipeline_layout),
             vertex: wgpu::VertexState {
-                module: &shader,
+                module: &sphere_shader,
                 entry_point: "vs_main",
                 buffers: &[Vertex::desc()],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
-                module: &shader,
+                module: &sphere_shader,
                 entry_point: "fs_main",
                 targets: &[Some(wgpu::ColorTargetState {
                     format: config.format,
@@ -147,46 +169,64 @@ impl<'a> Renderer<'a> {
             multiview: None,
         });
 
-        Self {
+        let sphere_mesh = Mesh::new_sphere(&device, 32, 32, 0.2, [0.95, 0.25, 0.35]);
+
+        let cloud_renderer = CloudRenderer::new(&device, &config, &camera_bind_group_layout);
+
+        Ok(Self {
             surface,
             device,
             queue,
             config,
             size,
-            render_pipeline,
-            sphere_mesh,
             camera,
             camera_uniform,
             camera_buffer,
             camera_bind_group,
-        }
-    }
-    pub fn size(&self) -> winit::dpi::PhysicalSize<u32> {
-        self.size
+            sphere_pipeline,
+            sphere_mesh,
+            cloud_renderer,
+        })
     }
 
-    pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
-        if new_size.width > 0 && new_size.height > 0 {
-            // Update the size field
-            self.size = new_size;
-            // Update the configuration
-            self.config.width = new_size.width;
-            self.config.height = new_size.height;
-            // Reconfigure the surface with the new size
-            self.surface.configure(&self.device, &self.config);
-            // Update the camera's aspect ratio
-            self.camera.aspect = self.config.width as f32 / self.config.height as f32;
+    pub fn resize(&mut self, new_size: PhysicalSize<u32>) {
+        if new_size.width == 0 || new_size.height == 0 {
+            return;
         }
+
+        self.size = new_size;
+        self.config.width = new_size.width;
+        self.config.height = new_size.height;
+        self.camera.aspect = self.config.width as f32 / self.config.height as f32;
+
+        if let Some(surface) = &self.surface {
+            surface.configure(&self.device, &self.config);
+        }
+    }
+
+    pub fn update_cloud(&mut self, samples: &[CloudVertex]) {
+        self.cloud_renderer
+            .write_points(&self.device, &self.queue, samples);
     }
 
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
-        // 1. Get a texture from the surface to draw on
-        let output = self.surface.get_current_texture()?;
+        self.render_with_ui(|_, _, _, _| {})
+    }
+
+    pub fn render_with_ui<F>(&mut self, mut ui_pass: F) -> Result<(), wgpu::SurfaceError>
+    where
+        F: FnMut(&wgpu::Device, &wgpu::Queue, &mut wgpu::CommandEncoder, &wgpu::TextureView),
+    {
+        let surface = match &self.surface {
+            Some(surface) => surface,
+            None => return Ok(()),
+        };
+
+        let output = surface.get_current_texture()?;
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
-        // Update the camera's uniform buffer
         self.camera_uniform.update_view_proj(&self.camera);
         self.queue.write_buffer(
             &self.camera_buffer,
@@ -194,14 +234,12 @@ impl<'a> Renderer<'a> {
             bytemuck::cast_slice(&[self.camera_uniform]),
         );
 
-        // 2. Create an encoder to build the commands
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Render Encoder"),
+                label: Some("Renderer Encoder"),
             });
 
-        // 3. The render pass
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Render Pass"),
@@ -210,9 +248,9 @@ impl<'a> Renderer<'a> {
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.1,
-                            g: 0.2,
-                            b: 0.3,
+                            r: 0.04,
+                            g: 0.05,
+                            b: 0.09,
                             a: 1.0,
                         }),
                         store: wgpu::StoreOp::Store,
@@ -223,21 +261,36 @@ impl<'a> Renderer<'a> {
                 occlusion_query_set: None,
             });
 
-            // 4. Draw the sphere
-            render_pass.set_pipeline(&self.render_pipeline);
+            render_pass.set_pipeline(&self.sphere_pipeline);
             render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
             render_pass.set_vertex_buffer(0, self.sphere_mesh.vertex_buffer.slice(..));
             render_pass.set_index_buffer(
                 self.sphere_mesh.index_buffer.slice(..),
                 wgpu::IndexFormat::Uint32,
             );
-            render_pass.draw_indexed(0..self.sphere_mesh.num_indices, 0, 0..1);
+            render_pass.draw_indexed(0..self.sphere_mesh.index_count, 0, 0..1);
+
+            self.cloud_renderer
+                .draw(&mut render_pass, &self.camera_bind_group);
         }
 
-        // 5. Submit the commands
+        ui_pass(&self.device, &self.queue, &mut encoder, &view);
+
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();
 
         Ok(())
+    }
+
+    pub fn size(&self) -> PhysicalSize<u32> {
+        self.size
+    }
+
+    pub fn device(&self) -> &wgpu::Device {
+        &self.device
+    }
+
+    pub fn surface_config(&self) -> &wgpu::SurfaceConfiguration {
+        &self.config
     }
 }

@@ -1,77 +1,86 @@
 use wgpu::{Instance, Surface};
 use winit::dpi::PhysicalSize;
 
-/// 플랫폼별 Surface 생성을 추상화하는 트레이트
+use crate::App;
+
+/// Platform-specific ability to construct a surface for rendering.
 pub trait SurfaceProvider {
     fn create_surface(
         &self,
         instance: &Instance,
-    ) -> Result<(Option<Surface<'static>>, PhysicalSize<u32>), Box<dyn std::error::Error>>;
+    ) -> Result<
+        (Option<Surface<'static>>, PhysicalSize<u32>),
+        Box<dyn std::error::Error + Send + Sync>,
+    >;
 }
 
-/// 네이티브 윈도우용 SurfaceProvider 구현
 #[cfg(not(target_arch = "wasm32"))]
 impl SurfaceProvider for winit::window::Window {
     fn create_surface(
         &self,
         instance: &Instance,
-    ) -> Result<(Option<Surface<'static>>, PhysicalSize<u32>), Box<dyn std::error::Error>> {
+    ) -> Result<
+        (Option<Surface<'static>>, PhysicalSize<u32>),
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
         let surface = instance.create_surface(self)?;
         let size = self.inner_size();
-        // Surface를 'static으로 변환하기 위해 unsafe 사용
         let static_surface = unsafe { std::mem::transmute(surface) };
         Ok((Some(static_surface), size))
     }
 }
 
-/// 네이티브 플랫폼 시작 함수
 #[cfg(not(target_arch = "wasm32"))]
 pub fn start() {
-    use crate::create_renderer;
     use pollster::block_on;
-    use winit::{event::*, event_loop::EventLoop, window::WindowBuilder};
+    use winit::event::{Event, WindowEvent};
+    use winit::event_loop::{ControlFlow, EventLoop};
+    use winit::window::WindowBuilder;
 
-    env_logger::init();
+    let _ = env_logger::builder().is_test(true).try_init();
 
-    let event_loop = EventLoop::new().unwrap();
+    let event_loop = EventLoop::new().expect("Failed to create event loop");
     let window = WindowBuilder::new()
-        .with_title("WGPU Triangle")
+        .with_title("Atomic Orbital Visualizer")
         .build(&event_loop)
-        .unwrap();
+        .expect("Failed to create window");
 
-    // 네이티브에서는 winit window를 사용해서 renderer 생성
-    let mut renderer = block_on(create_renderer(&window)).unwrap();
+    let mut app = block_on(App::initialize(&window)).expect("Failed to initialise renderer app");
+    window.request_redraw();
 
-    let _ = event_loop.run(move |event, target| match event {
-        Event::WindowEvent {
-            event: WindowEvent::CloseRequested,
-            ..
-        } => {
-            target.exit();
+    let _ = event_loop.run(move |event, target| {
+        target.set_control_flow(ControlFlow::Poll);
+
+        match event {
+            Event::WindowEvent { event, .. } => {
+                app.handle_event(&window, &event);
+
+                match event {
+                    WindowEvent::CloseRequested => target.exit(),
+                    WindowEvent::Resized(size) => app.resize(size),
+                    WindowEvent::ScaleFactorChanged { .. } => {
+                        app.resize(window.inner_size());
+                    }
+                    WindowEvent::RedrawRequested => {
+                        if let Err(err) = app.render(&window) {
+                            match err {
+                                wgpu::SurfaceError::Lost => app.resize(app.size()),
+                                wgpu::SurfaceError::OutOfMemory => target.exit(),
+                                wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Timeout => {}
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Event::AboutToWait => {
+                window.request_redraw();
+            }
+            _ => {}
         }
-        Event::WindowEvent {
-            event: WindowEvent::Resized(new_size),
-            ..
-        } => {
-            renderer.resize(new_size);
-        }
-        Event::WindowEvent {
-            event: WindowEvent::RedrawRequested,
-            ..
-        } => match renderer.render() {
-            Ok(_) => {}
-            Err(wgpu::SurfaceError::Lost) => renderer.resize(renderer.size()),
-            Err(wgpu::SurfaceError::OutOfMemory) => target.exit(),
-            Err(e) => eprintln!("Render error: {:?}", e),
-        },
-        Event::AboutToWait => {
-            // 지속적인 렌더링을 위해 redraw 요청
-        }
-        _ => {}
     });
 }
 
-// wasm32 타겟에서 필요한 import들
 #[cfg(target_arch = "wasm32")]
 use {wasm_bindgen::JsCast, wasm_bindgen::prelude::*, wasm_bindgen_futures::spawn_local};
 
@@ -81,50 +90,46 @@ pub fn start() {
     console_log::init_with_level(log::Level::Debug).expect("Couldn't initialize logger");
     console_error_panic_hook::set_once();
 
-    // DOM이 로드될 때까지 기다림
-    let window = web_sys::window().unwrap();
-    let document = window.document().unwrap();
-    let canvas = document.get_element_by_id("canvas").unwrap();
+    let window = web_sys::window().expect("no global `window` exists");
+    let document = window.document().expect("should have a document on window");
+    let canvas = document
+        .get_element_by_id("canvas")
+        .expect("canvas element");
     let canvas: web_sys::HtmlCanvasElement = canvas.dyn_into().unwrap();
 
-    // 캔버스 크기 설정 (HTML과 일치시킴)
-    canvas.set_width(640);
-    canvas.set_height(480);
+    canvas.set_width(800);
+    canvas.set_height(600);
 
     spawn_local(async move {
-        match crate::create_renderer(&canvas).await {
-            Ok(mut renderer) => {
-                log::info!("Renderer created successfully!");
-                // 첫 번째 렌더링 수행
-                match renderer.render() {
-                    Ok(_) => log::info!("Triangle rendered successfully!"),
-                    Err(e) => log::error!("Render failed: {:?}", e),
+        match App::initialize(&canvas).await {
+            Ok(mut app) => {
+                if let Err(err) = app.render() {
+                    log::error!("Initial render failed: {:?}", err);
                 }
             }
-            Err(e) => {
-                log::error!("Failed to create renderer: {:?}", e);
+            Err(err) => {
+                log::error!("Failed to initialise app: {:?}", err);
             }
         }
     });
 }
 
-/// 웹 캔버스용 SurfaceProvider 구현
 #[cfg(target_arch = "wasm32")]
 impl SurfaceProvider for web_sys::HtmlCanvasElement {
     fn create_surface(
         &self,
         instance: &Instance,
-    ) -> Result<(Option<Surface<'static>>, PhysicalSize<u32>), Box<dyn std::error::Error>> {
-        // wasm32에서는 캔버스를 직접 사용 (OffscreenCanvas 대신)
+    ) -> Result<
+        (Option<Surface<'static>>, PhysicalSize<u32>),
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
         let surface = instance.create_surface(wgpu::SurfaceTarget::Canvas(self.clone()))?;
         let static_surface = unsafe { std::mem::transmute(surface) };
-
         let size = PhysicalSize::new(self.width(), self.height());
         Ok((Some(static_surface), size))
     }
 }
 
-/// 헤드리스 모드용 (Surface 없이 실행)
 pub struct HeadlessProvider {
     pub width: u32,
     pub height: u32,
@@ -134,7 +139,10 @@ impl SurfaceProvider for HeadlessProvider {
     fn create_surface(
         &self,
         _instance: &Instance,
-    ) -> Result<(Option<Surface<'static>>, PhysicalSize<u32>), Box<dyn std::error::Error>> {
+    ) -> Result<
+        (Option<Surface<'static>>, PhysicalSize<u32>),
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
         let size = PhysicalSize::new(self.width, self.height);
         Ok((None, size))
     }
