@@ -101,7 +101,7 @@ impl MonteCarloSampler {
         let mut accepted = Vec::with_capacity(config.samples);
 
         let mut expansions = 0usize;
-        while accepted.len() < config.samples && expansions <= 4 {
+        while accepted.len() < config.samples && expansions <= 6 {
             let mut attempts = 0usize;
             let max_attempts = config.samples.saturating_mul(50).max(10_000);
 
@@ -122,7 +122,7 @@ impl MonteCarloSampler {
 
             if accepted.len() < config.samples {
                 expansions += 1;
-                bounds = bounds.scaled(1.5);
+                bounds = bounds.scaled(2.0);
             }
         }
 

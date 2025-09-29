@@ -10,16 +10,15 @@ pub type AppError = Box<dyn std::error::Error + Send + Sync>;
 pub type AppResult<T> = Result<T, AppError>;
 
 #[cfg(not(target_arch = "wasm32"))]
+mod camera;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::ui::desktop::{UiFrame, UiLayer};
 #[cfg(not(target_arch = "wasm32"))]
-use winit::{
-    event::{ElementState, KeyEvent, MouseScrollDelta, WindowEvent},
-    keyboard::{KeyCode, PhysicalKey},
-    window::Window,
-};
-
-const MOVE_STEP: f32 = 0.2;
-const ZOOM_STEP: f32 = 0.5;
+use camera::CameraController;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
+#[cfg(not(target_arch = "wasm32"))]
+use winit::{event::WindowEvent, window::Window};
 
 pub struct App {
     renderer: Renderer,
@@ -30,6 +29,10 @@ pub struct App {
     ui_state: UiState,
     #[cfg(not(target_arch = "wasm32"))]
     ui_layer: UiLayer,
+    #[cfg(not(target_arch = "wasm32"))]
+    camera_controller: CameraController,
+    #[cfg(not(target_arch = "wasm32"))]
+    last_frame_time: Instant,
 }
 
 impl App {
@@ -39,7 +42,7 @@ impl App {
         let element = Element::hydrogen();
         let atom = Atom::new(element.clone());
         let mut sampler = MonteCarloSampler::new();
-        let sample_config = SampleConfig::new(20_000);
+        let sample_config = SampleConfig::new(50_000);
         let cloud_vertices = Self::generate_cloud(&mut sampler, &atom, sample_config);
         renderer.update_cloud(&cloud_vertices);
 
@@ -51,6 +54,8 @@ impl App {
 
         let surface_format = renderer.surface_config().format;
         let ui_layer = UiLayer::new(window, renderer.device(), surface_format);
+        let camera_controller = CameraController::new(renderer.camera());
+        let last_frame_time = Instant::now();
 
         Ok(Self {
             renderer,
@@ -60,6 +65,8 @@ impl App {
             cloud_vertices,
             ui_state,
             ui_layer,
+            camera_controller,
+            last_frame_time,
         })
     }
 
@@ -69,7 +76,7 @@ impl App {
         let element = Element::hydrogen();
         let atom = Atom::new(element.clone());
         let mut sampler = MonteCarloSampler::new();
-        let sample_config = SampleConfig::new(20_000);
+        let sample_config = SampleConfig::new(50_000);
         let cloud_vertices = Self::generate_cloud(&mut sampler, &atom, sample_config);
         renderer.update_cloud(&cloud_vertices);
 
@@ -99,11 +106,25 @@ impl App {
             return true;
         }
 
-        let consumed = match event {
-            WindowEvent::KeyboardInput { event, .. } => self.handle_keyboard_input(event),
-            WindowEvent::MouseWheel { delta, .. } => self.handle_scroll(delta),
-            _ => false,
-        };
+        let mut consumed = false;
+
+        match event {
+            WindowEvent::KeyboardInput { event, .. } => {
+                consumed |= self.camera_controller.handle_keyboard(event);
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                consumed |= self.camera_controller.handle_scroll(delta);
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                consumed |= self.camera_controller.handle_mouse_button(*state, *button);
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                consumed |= self
+                    .camera_controller
+                    .handle_cursor_move((position.x, position.y));
+            }
+            _ => {}
+        }
 
         if consumed {
             window.request_redraw();
@@ -114,9 +135,12 @@ impl App {
 
     #[cfg(not(target_arch = "wasm32"))]
     pub fn render(&mut self, window: &Window) -> Result<(), wgpu::SurfaceError> {
+        self.update_camera();
+
         let ui_frame: UiFrame = {
             let (ui_layer, ui_state) = (&mut self.ui_layer, &mut self.ui_state);
-            ui_layer.prepare(window, |ctx| Self::build_ui(ctx, ui_state))
+            let surface_size = self.renderer.size();
+            ui_layer.prepare(window, surface_size, |ctx| Self::build_ui(ctx, ui_state))
         };
 
         self.apply_ui_changes();
@@ -133,48 +157,6 @@ impl App {
     #[cfg(target_arch = "wasm32")]
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         self.renderer.render()
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn handle_keyboard_input(&mut self, event: &KeyEvent) -> bool {
-        if event.state != ElementState::Pressed {
-            return false;
-        }
-
-        match event.physical_key {
-            PhysicalKey::Code(KeyCode::KeyW) => {
-                self.renderer.move_camera(MOVE_STEP, 0.0);
-                true
-            }
-            PhysicalKey::Code(KeyCode::KeyS) => {
-                self.renderer.move_camera(-MOVE_STEP, 0.0);
-                true
-            }
-            PhysicalKey::Code(KeyCode::KeyD) => {
-                self.renderer.move_camera(0.0, MOVE_STEP);
-                true
-            }
-            PhysicalKey::Code(KeyCode::KeyA) => {
-                self.renderer.move_camera(0.0, -MOVE_STEP);
-                true
-            }
-            _ => false,
-        }
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn handle_scroll(&mut self, delta: &MouseScrollDelta) -> bool {
-        let scroll_amount = match delta {
-            MouseScrollDelta::LineDelta(_, y) => *y,
-            MouseScrollDelta::PixelDelta(pos) => pos.y as f32 * 0.01,
-        };
-
-        if scroll_amount.abs() <= f32::EPSILON {
-            return false;
-        }
-
-        self.renderer.zoom_camera(scroll_amount * ZOOM_STEP);
-        true
     }
 
     pub fn size(&self) -> PhysicalSize<u32> {
@@ -302,9 +284,9 @@ impl App {
 
                 ui.separator();
 
-                let mut samples = ui_state.sample_count.max(1_000);
+                let mut samples = ui_state.sample_count.max(5_000);
                 if ui
-                    .add(Slider::new(&mut samples, 1_000..=100_000).text("Samples"))
+                    .add(Slider::new(&mut samples, 5_000..=250_000).text("Samples"))
                     .changed()
                 {
                     ui_state.sample_count = samples;
@@ -315,6 +297,14 @@ impl App {
                     ui_state.request_resample();
                 }
             });
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn update_camera(&mut self) {
+        let now = Instant::now();
+        let dt = (now - self.last_frame_time).as_secs_f32();
+        self.last_frame_time = now;
+        self.camera_controller.update(&mut self.renderer, dt);
     }
 }
 

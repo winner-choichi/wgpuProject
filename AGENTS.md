@@ -24,20 +24,23 @@ The project delivers a cross-platform atomic orbital visualizer. `src/main.rs` s
 
 Format with `cargo fmt --all` and lint via `cargo clippy --all-targets -- -D warnings` before sending patches. Use four-space indentation, <100 character lines, `snake_case` for items, `PascalCase` for types, and `SCREAMING_SNAKE_CASE` for constants. Keep WGSL filenames lowercase with hyphens (`sphere.wgsl`, `cloud.wgsl`). Prefer explicit visibility, add `label:`s to GPU resources for debugging, and keep the egui UI layout logic in dedicated helpers.
 
+## Simulation & Quantum Model
+
+The Monte Carlo pipeline (`src/simulation/solver.rs`) turns hydrogenic wavefunctions into draw-ready `CloudVertex` buffers. We blend analytic sampling with rejection fallback so the common orbitals are fast while the code stays extensible.
+
+- **Analytic draws**: 1s and 2s states use their closed-form radial CDFs (gamma distribution over `r` plus uniform solid angle). For 2p (`n = 2`, `l = 1`, `m ∈ {-1,0,1}`) we sample `r` ~ Γ(k=3, θ=a₀/2) and project along the correct angular factor (`Y₁m`). We store weights as √(ρ/ρₘₐₓ) to preserve relative opacity without saturating bright regions.
+- **Fallback rejection**: Orbitals without an explicit sampler draw inside a cubic bounding box sized by `Orbital::bounding_radius`. We expand the box up to four times if acceptance stalls, then back-fill with zero-weight samples (look for the warning in logs when that happens).
+- **Quantum reference**: The hydrogenic radial functions implemented match textbook forms: R₁₀(r)=2 a₀^{-3/2} e^{-r/a₀}, R₂₀(r)=(1/2√2)a₀^{-3/2}(2−r/a₀)e^{-r/2a₀}, R₂₁(r)=(1/2√6)a₀^{-3/2}(r/a₀)e^{-r/2a₀}. Effective Bohr radius scales as a₀/Z, so Helium renders tighter clouds than Hydrogen.
+
 ## Runtime Features & Workflows
 
-The Monte Carlo rejection sampler (`src/simulation/solver.rs`) produces weighted electron cloud vertices for the currently selected element and orbital. The egui panel (desktop build) exposes atomic number, quantum numbers (`n`, `l`, `m`), and sample count; any change triggers resampling and feeds fresh vertices into the renderer (`App::render`). The renderer composites nucleus spheres and the probabilistic cloud, then overlays the UI using a secondary render pass.
-
-### Sampling Notes
-
-- Hydrogenic 1s and 2s orbitals are sampled via closed-form cumulative distributions for speed.
-- The 2p family (`n = 2`, `l = 1`) now uses exact hydrogenic densities, so the visualization shows the expected sandglass lobes and nodal planes without resorting to isotropic fallbacks.
-- Higher orbitals still fall back to radial Gaussians; extend `Orbital::probability_density` when you need more exact shapes.
+The egui panel (desktop build) exposes atomic number, quantum numbers (`n`, `l`, `m`), and sample count; any change triggers resampling and feeds fresh vertices into the renderer (`App::render`). The renderer composites nucleus spheres, probabilistic clouds, and the UI in sequence. Clamped surface sizes ensure we stay within adapter texture limits even on ultra-wide windows, and warnings are logged when the requested extent exceeds the GPU’s maximum dimension.
 
 ### Performance Tips
 
 - Default sample count is 20 000; lower it while developing UI flows, then ramp it up for screenshots or demos.
-- The rejection sampler expands the bounding box adaptively (up to 4×) before giving up and filling remaining points with zero-weight samples. Monitor the log for the warning if you see sparse clouds.
+- Monte Carlo loops pre-allocate exact capacities and reuse RNG state to avoid per-frame allocations. Rejection boxes expand adaptively (up to 4×) before falling back to filler samples.
+- Camera input is velocity-smoothed (`acceleration = damping = 12`), so quick taps create gentle nudges while longer holds reach cruise speed. Right-click drag updates yaw/pitch; WASD+Space/Shift move in the camera’s local basis; scroll performs a dolly with clamped near/far distances.
 
 ## Testing Guidelines
 

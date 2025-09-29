@@ -89,9 +89,9 @@ impl Orbital {
     pub fn bounding_radius(&self, element: &Element) -> f32 {
         let a = self.effective_bohr_radius(element);
         match self.n {
-            1 => 4.0 * a,
-            2 => 8.0 * a,
-            n => (n as f32).powi(2) * 4.0 * a,
+            1 => 6.0 * a,
+            2 => 12.0 * a,
+            n => (n as f32).powi(2) * 6.0 * a,
         }
     }
 }

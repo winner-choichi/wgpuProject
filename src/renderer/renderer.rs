@@ -4,6 +4,7 @@ use crate::renderer::cloud::{CloudRenderer, CloudVertex};
 use crate::renderer::mesh::Mesh;
 use crate::renderer::vertex::Vertex;
 use glam::Vec3;
+use log::warn;
 use std::borrow::Cow;
 use wgpu::util::DeviceExt;
 use winit::dpi::PhysicalSize;
@@ -21,6 +22,7 @@ pub struct Renderer {
     sphere_pipeline: wgpu::RenderPipeline,
     sphere_mesh: Mesh,
     cloud_renderer: CloudRenderer,
+    max_surface_extent: u32,
 }
 
 impl Renderer {
@@ -69,16 +71,20 @@ impl Renderer {
             )
             .await?;
 
+        let max_surface_extent = device.limits().max_texture_dimension_2d;
+
         let format = surface
             .as_ref()
             .map(|s| s.get_capabilities(&adapter).formats[0])
             .unwrap_or(wgpu::TextureFormat::Bgra8UnormSrgb);
 
+        let clamped_size = clamp_surface_size(size, max_surface_extent);
+
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
-            width: size.width.max(1),
-            height: size.height.max(1),
+            width: clamped_size.width.max(1),
+            height: clamped_size.height.max(1),
             present_mode: wgpu::PresentMode::Fifo,
             alpha_mode: wgpu::CompositeAlphaMode::Auto,
             view_formats: vec![],
@@ -178,7 +184,7 @@ impl Renderer {
             device,
             queue,
             config,
-            size,
+            size: clamped_size,
             camera,
             camera_uniform,
             camera_buffer,
@@ -186,6 +192,7 @@ impl Renderer {
             sphere_pipeline,
             sphere_mesh,
             cloud_renderer,
+            max_surface_extent,
         })
     }
 
@@ -194,9 +201,17 @@ impl Renderer {
             return;
         }
 
-        self.size = new_size;
-        self.config.width = new_size.width;
-        self.config.height = new_size.height;
+        let clamped = clamp_surface_size(new_size, self.max_surface_extent);
+        if (clamped.width, clamped.height) != (new_size.width, new_size.height) {
+            warn!(
+                "Surface size clamped to {}x{} (requested {}x{}) due to adapter limits",
+                clamped.width, clamped.height, new_size.width, new_size.height
+            );
+        }
+
+        self.size = clamped;
+        self.config.width = clamped.width.max(1);
+        self.config.height = clamped.height.max(1);
         self.camera.aspect = self.config.width as f32 / self.config.height as f32;
 
         if let Some(surface) = &self.surface {
@@ -211,6 +226,14 @@ impl Renderer {
 
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         self.render_with_ui(|_, _, _, _| {})
+    }
+
+    pub fn camera(&self) -> &Camera {
+        &self.camera
+    }
+
+    pub fn camera_mut(&mut self) -> &mut Camera {
+        &mut self.camera
     }
 
     pub fn move_camera(&mut self, forward: f32, right: f32) {
@@ -341,4 +364,10 @@ impl Renderer {
     pub fn surface_config(&self) -> &wgpu::SurfaceConfiguration {
         &self.config
     }
+}
+
+fn clamp_surface_size(mut size: PhysicalSize<u32>, max_extent: u32) -> PhysicalSize<u32> {
+    size.width = size.width.min(max_extent).max(1);
+    size.height = size.height.min(max_extent).max(1);
+    size
 }

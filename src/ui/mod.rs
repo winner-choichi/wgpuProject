@@ -60,7 +60,7 @@ pub mod desktop {
     use egui_wgpu::{Renderer, ScreenDescriptor};
     use egui_winit::{State as EguiWinitState, pixels_per_point};
     use wgpu::{CommandEncoder, Device, Queue, TextureFormat, TextureView};
-    use winit::{event::WindowEvent, window::Window};
+    use winit::{dpi::PhysicalSize, event::WindowEvent, window::Window};
 
     pub struct UiLayer {
         ctx: egui::Context,
@@ -106,11 +106,18 @@ pub mod desktop {
             response.consumed
         }
 
-        pub fn prepare<F>(&mut self, window: &Window, mut build_ui: F) -> UiFrame
+        pub fn prepare<F>(
+            &mut self,
+            window: &Window,
+            surface_size: PhysicalSize<u32>,
+            mut build_ui: F,
+        ) -> UiFrame
         where
             F: FnMut(&egui::Context),
         {
             self.update_screen_descriptor(window);
+            self.screen_desc.size_in_pixels =
+                [surface_size.width.max(1), surface_size.height.max(1)];
             let raw_input = self.state.take_egui_input(window);
             let full_output = self.ctx.run(raw_input, |ctx| build_ui(ctx));
             self.state
@@ -184,8 +191,8 @@ pub mod desktop {
 
         fn update_screen_descriptor(&mut self, window: &Window) {
             let size = window.inner_size();
-            self.screen_desc.size_in_pixels = [size.width.max(1), size.height.max(1)];
             self.screen_desc.pixels_per_point = pixels_per_point(&self.ctx, window);
+            self.screen_desc.size_in_pixels = [size.width.max(1), size.height.max(1)];
         }
     }
 }
