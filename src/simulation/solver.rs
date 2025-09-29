@@ -5,6 +5,8 @@ use log::warn;
 use rand::Rng;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
+use rand_distr::{Distribution, Gamma};
+use std::f32::consts::TAU;
 
 #[derive(Clone, Debug)]
 pub struct CloudSample {
@@ -39,6 +41,55 @@ impl MonteCarloSampler {
     }
 
     pub fn sample_orbital(
+        &mut self,
+        element: &Element,
+        orbital: &Orbital,
+        config: SampleConfig,
+    ) -> Vec<CloudSample> {
+        if config.samples == 0 {
+            return Vec::new();
+        }
+
+        if let Some(samples) = self.try_sample_ground_s_orbital(element, orbital, config) {
+            return samples;
+        }
+
+        self.sample_orbital_rejection(element, orbital, config)
+    }
+
+    fn try_sample_ground_s_orbital(
+        &mut self,
+        element: &Element,
+        orbital: &Orbital,
+        config: SampleConfig,
+    ) -> Option<Vec<CloudSample>> {
+        if !(orbital.n == 1 && orbital.l == 0 && orbital.m == 0) {
+            return None;
+        }
+
+        let scale = orbital.effective_bohr_radius(element) / 2.0;
+        if !scale.is_finite() || scale <= 0.0 {
+            return None;
+        }
+
+        let gamma = Gamma::<f64>::new(3.0, f64::from(scale)).ok()?;
+        let max_density = orbital.max_density(element).max(1e-6);
+        let mut samples = Vec::with_capacity(config.samples);
+
+        for _ in 0..config.samples {
+            let r = gamma.sample(&mut self.rng) as f32;
+            let direction = random_unit_vector(&mut self.rng);
+            let position = direction * r;
+            let density = orbital.probability_density(element, position);
+            let weight = (density / max_density).clamp(0.0, 1.0).sqrt();
+
+            samples.push(CloudSample { position, weight });
+        }
+
+        Some(samples)
+    }
+
+    fn sample_orbital_rejection(
         &mut self,
         element: &Element,
         orbital: &Orbital,
@@ -94,6 +145,13 @@ impl MonteCarloSampler {
 
         accepted
     }
+}
+
+fn random_unit_vector<R: Rng>(rng: &mut R) -> Vec3 {
+    let z = rng.gen_range(-1.0f32..1.0f32);
+    let azimuth = rng.gen_range(0.0f32..TAU);
+    let radial = (1.0 - z * z).max(0.0).sqrt();
+    Vec3::new(radial * azimuth.cos(), radial * azimuth.sin(), z)
 }
 
 #[derive(Clone, Copy, Debug)]

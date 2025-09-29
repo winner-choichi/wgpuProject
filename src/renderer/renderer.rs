@@ -213,6 +213,54 @@ impl Renderer {
         self.render_with_ui(|_, _, _, _| {})
     }
 
+    pub fn move_camera(&mut self, forward: f32, right: f32) {
+        if forward == 0.0 && right == 0.0 {
+            return;
+        }
+
+        let forward_dir = (self.camera.target - self.camera.eye).normalize_or_zero();
+        if forward_dir.length_squared() == 0.0 {
+            return;
+        }
+
+        let right_dir = forward_dir.cross(self.camera.up).normalize_or_zero();
+        let mut delta = Vec3::ZERO;
+
+        if forward.abs() > 0.0 {
+            delta += forward_dir * forward;
+        }
+
+        if right.abs() > 0.0 && right_dir.length_squared() > 0.0 {
+            delta += right_dir * right;
+        }
+
+        if delta.length_squared() == 0.0 {
+            return;
+        }
+
+        self.camera.eye += delta;
+        self.camera.target += delta;
+    }
+
+    pub fn zoom_camera(&mut self, amount: f32) {
+        if amount == 0.0 {
+            return;
+        }
+
+        let forward = self.camera.target - self.camera.eye;
+        let distance = forward.length();
+        if distance <= f32::EPSILON {
+            return;
+        }
+
+        let min_distance = 0.5;
+        let max_distance = self.camera.zfar * 0.95;
+        let new_distance = (distance - amount).clamp(min_distance, max_distance);
+
+        let direction = forward.normalize();
+        self.camera.eye = self.camera.target - direction * new_distance;
+    }
+
     pub fn render_with_ui<F>(&mut self, mut ui_pass: F) -> Result<(), wgpu::SurfaceError>
     where
         F: FnMut(&wgpu::Device, &wgpu::Queue, &mut wgpu::CommandEncoder, &wgpu::TextureView),
