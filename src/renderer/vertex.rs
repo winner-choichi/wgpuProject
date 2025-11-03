@@ -4,11 +4,11 @@ use std::mem;
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Vertex {
     pub position: [f32; 3],
-    pub color: [f32; 3],
+    pub color: [f32; 4],
 }
 
 impl Vertex {
-    pub fn new(position: [f32; 3], color: [f32; 3]) -> Self {
+    pub fn new(position: [f32; 3], color: [f32; 4]) -> Self {
         Self { position, color }
     }
 
@@ -25,7 +25,7 @@ impl Vertex {
                 wgpu::VertexAttribute {
                     offset: mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
                     shader_location: 1,
-                    format: wgpu::VertexFormat::Float32x3,
+                    format: wgpu::VertexFormat::Float32x4,
                 },
             ],
         }
