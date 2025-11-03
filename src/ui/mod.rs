@@ -1,4 +1,24 @@
 use crate::physics::electron::Orbital;
+use crate::simulation::ozone::{OzoneParameters, RadiationFlux};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VisualizationMode {
+    Chapter1,
+    Chapter2,
+    Chapter3,
+}
+
+impl VisualizationMode {
+    pub const ALL: [Self; 3] = [Self::Chapter1, Self::Chapter2, Self::Chapter3];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Chapter1 => "Chapter 1 — Atomic Orbital",
+            Self::Chapter2 => "Chapter 2 — Bond Visualization",
+            Self::Chapter3 => "Chapter 3 — Ozone Shield",
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct UiState {
@@ -7,18 +27,33 @@ pub struct UiState {
     pub angular_l: u8,
     pub magnetic_m: i8,
     pub sample_count: usize,
+    pub visualization_mode: VisualizationMode,
+    pub ozone_dobson_units: f32,
+    pub ozone_photon_count: usize,
+    pub ozone_flux: RadiationFlux,
     resample_requested: bool,
+    ozone_update_requested: bool,
 }
 
 impl UiState {
-    pub fn new(selected_atomic_number: u8, sample_count: usize, orbital: Orbital) -> Self {
+    pub fn new(
+        selected_atomic_number: u8,
+        sample_count: usize,
+        orbital: Orbital,
+        ozone_params: OzoneParameters,
+    ) -> Self {
         Self {
             selected_atomic_number,
             principal_n: orbital.n,
             angular_l: orbital.l,
             magnetic_m: orbital.m,
             sample_count,
+            visualization_mode: VisualizationMode::Chapter1,
+            ozone_dobson_units: ozone_params.dobson_units,
+            ozone_photon_count: ozone_params.photon_count,
+            ozone_flux: RadiationFlux::default(),
             resample_requested: false,
+            ozone_update_requested: false,
         }
     }
 
@@ -34,6 +69,20 @@ impl UiState {
         let requested = self.resample_requested;
         self.resample_requested = false;
         requested
+    }
+
+    pub fn request_ozone_update(&mut self) {
+        self.ozone_update_requested = true;
+    }
+
+    pub fn take_ozone_update_request(&mut self) -> bool {
+        let requested = self.ozone_update_requested;
+        self.ozone_update_requested = false;
+        requested
+    }
+
+    pub fn set_ozone_flux(&mut self, flux: RadiationFlux) {
+        self.ozone_flux = flux;
     }
 
     pub fn sync_quantum_numbers(&mut self) {

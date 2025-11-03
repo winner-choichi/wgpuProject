@@ -14,7 +14,7 @@ impl Mesh {
         latitudes: u32,
         longitudes: u32,
         radius: f32,
-        color: [f32; 3],
+        color: [f32; 4],
     ) -> Self {
         let (vertices, indices) = generate_uv_sphere(latitudes, longitudes, radius, color);
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -41,7 +41,7 @@ fn generate_uv_sphere(
     latitudes: u32,
     longitudes: u32,
     radius: f32,
-    color: [f32; 3],
+    color: [f32; 4],
 ) -> (Vec<Vertex>, Vec<u32>) {
     let mut vertices = Vec::new();
     let mut indices = Vec::new();

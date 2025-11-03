@@ -9,6 +9,33 @@ use std::borrow::Cow;
 use wgpu::util::DeviceExt;
 use winit::dpi::PhysicalSize;
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SphereStyle {
+    pub visible: bool,
+    pub radius: f32,
+    pub color: [f32; 4],
+}
+
+impl SphereStyle {
+    pub const fn hidden() -> Self {
+        Self {
+            visible: false,
+            radius: 0.0,
+            color: [0.0, 0.0, 0.0, 0.0],
+        }
+    }
+}
+
+impl Default for SphereStyle {
+    fn default() -> Self {
+        Self {
+            visible: true,
+            radius: 0.2,
+            color: [0.95, 0.25, 0.35, 1.0],
+        }
+    }
+}
+
 pub struct Renderer {
     surface: Option<wgpu::Surface<'static>>,
     device: wgpu::Device,
@@ -20,7 +47,10 @@ pub struct Renderer {
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
     sphere_pipeline: wgpu::RenderPipeline,
-    sphere_mesh: Mesh,
+    earth_mesh: Option<Mesh>,
+    earth_style: SphereStyle,
+    shell_mesh: Option<Mesh>,
+    shell_style: SphereStyle,
     cloud_renderer: CloudRenderer,
     max_surface_extent: u32,
 }
@@ -164,7 +194,7 @@ impl Renderer {
                 entry_point: "fs_main",
                 targets: &[Some(wgpu::ColorTargetState {
                     format: config.format,
-                    blend: Some(wgpu::BlendState::REPLACE),
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: Default::default(),
@@ -175,7 +205,21 @@ impl Renderer {
             multiview: None,
         });
 
-        let sphere_mesh = Mesh::new_sphere(&device, 32, 32, 0.2, [0.95, 0.25, 0.35]);
+        let earth_style = SphereStyle::default();
+        let earth_mesh = if earth_style.visible {
+            Some(Mesh::new_sphere(
+                &device,
+                32,
+                32,
+                earth_style.radius,
+                earth_style.color,
+            ))
+        } else {
+            None
+        };
+
+        let shell_style = SphereStyle::hidden();
+        let shell_mesh = None;
 
         let cloud_renderer = CloudRenderer::new(&device, &config, &camera_bind_group_layout);
 
@@ -190,7 +234,10 @@ impl Renderer {
             camera_buffer,
             camera_bind_group,
             sphere_pipeline,
-            sphere_mesh,
+            earth_mesh,
+            earth_style,
+            shell_mesh,
+            shell_style,
             cloud_renderer,
             max_surface_extent,
         })
@@ -222,6 +269,42 @@ impl Renderer {
     pub fn update_cloud(&mut self, samples: &[CloudVertex]) {
         self.cloud_renderer
             .write_points(&self.device, &self.queue, samples);
+    }
+
+    pub fn update_earth_style(&mut self, style: SphereStyle) {
+        if self.earth_style == style {
+            return;
+        }
+        self.earth_style = style;
+        self.earth_mesh = if style.visible {
+            Some(Mesh::new_sphere(
+                &self.device,
+                32,
+                32,
+                style.radius,
+                style.color,
+            ))
+        } else {
+            None
+        };
+    }
+
+    pub fn update_shell_style(&mut self, style: SphereStyle) {
+        if self.shell_style == style {
+            return;
+        }
+        self.shell_style = style;
+        self.shell_mesh = if style.visible {
+            Some(Mesh::new_sphere(
+                &self.device,
+                32,
+                32,
+                style.radius,
+                style.color,
+            ))
+        } else {
+            None
+        };
     }
 
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
@@ -334,12 +417,18 @@ impl Renderer {
 
             render_pass.set_pipeline(&self.sphere_pipeline);
             render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
-            render_pass.set_vertex_buffer(0, self.sphere_mesh.vertex_buffer.slice(..));
-            render_pass.set_index_buffer(
-                self.sphere_mesh.index_buffer.slice(..),
-                wgpu::IndexFormat::Uint32,
-            );
-            render_pass.draw_indexed(0..self.sphere_mesh.index_count, 0, 0..1);
+            if let Some(mesh) = &self.earth_mesh {
+                render_pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+                render_pass
+                    .set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                render_pass.draw_indexed(0..mesh.index_count, 0, 0..1);
+            }
+            if let Some(mesh) = &self.shell_mesh {
+                render_pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+                render_pass
+                    .set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                render_pass.draw_indexed(0..mesh.index_count, 0, 0..1);
+            }
 
             self.cloud_renderer
                 .draw(&mut render_pass, &self.camera_bind_group);

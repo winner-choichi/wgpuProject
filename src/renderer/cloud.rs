@@ -6,14 +6,21 @@ use std::mem;
 pub struct CloudVertex {
     pub position: [f32; 3],
     pub weight: f32,
+    pub kind: u32,
 }
 
 impl CloudVertex {
-    pub fn new(position: Vec3, weight: f32) -> Self {
+    pub fn new(position: Vec3, weight: f32, kind: u32) -> Self {
         Self {
             position: position.to_array(),
             weight,
+            kind,
         }
+    }
+
+    pub fn with_kind(mut self, kind: u32) -> Self {
+        self.kind = kind;
+        self
     }
 
     pub fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
@@ -30,6 +37,12 @@ impl CloudVertex {
                     offset: mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
                     shader_location: 1,
                     format: wgpu::VertexFormat::Float32,
+                },
+                wgpu::VertexAttribute {
+                    offset: (mem::size_of::<[f32; 3]>() + mem::size_of::<f32>())
+                        as wgpu::BufferAddress,
+                    shader_location: 2,
+                    format: wgpu::VertexFormat::Uint32,
                 },
             ],
         }
